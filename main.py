@@ -12,13 +12,13 @@ import joblib
 
 app = FastAPI(
     title="Sahkar Seva Setu AI API",
-    description="AI demand forecasting and workforce insight API for Sahkar Seva Setu",
+    description="AI demand forecasting and workforce planning API",
     version="2.0"
 )
 
 
 # =========================================
-# ALLOW WEBSITE TO CALL API
+# CORS
 # =========================================
 
 app.add_middleware(
@@ -48,7 +48,7 @@ print("✅ Model loaded successfully!")
 
 
 # =========================================
-# INPUT DATA STRUCTURE
+# INPUT DATA
 # =========================================
 
 class PredictionInput(BaseModel):
@@ -78,7 +78,7 @@ class PredictionInput(BaseModel):
 
 
 # =========================================
-# HOME PAGE
+# HOME
 # =========================================
 
 @app.get("/")
@@ -116,27 +116,34 @@ def get_demand_level(predicted_demand, active_workers):
 
 
 # =========================================
-# TREND ANALYSIS
+# TREND
 # =========================================
 
-def get_trend(predicted_demand, demand_last_7_days, demand_last_30_days):
+def get_trend(
+    predicted_demand,
+    previous_day_demand,
+    demand_last_7_days,
+    demand_last_30_days
+):
 
     recent_average = (
-        demand_last_7_days + demand_last_30_days
-    ) / 2
+        previous_day_demand
+        + demand_last_7_days
+        + demand_last_30_days
+    ) / 3
 
     if recent_average == 0:
         return "STABLE"
 
-    change = (
+    percentage_change = (
         (predicted_demand - recent_average)
         / recent_average
     ) * 100
 
-    if change >= 10:
+    if percentage_change >= 10:
         return "RISING"
 
-    elif change <= -10:
+    elif percentage_change <= -10:
         return "FALLING"
 
     else:
@@ -144,34 +151,180 @@ def get_trend(predicted_demand, demand_last_7_days, demand_last_30_days):
 
 
 # =========================================
-# PREDICTION ENDPOINT
+# INSIGHT GENERATOR
+# =========================================
+
+def generate_insight(
+    predicted_demand,
+    active_workers,
+    emergency_requests,
+    completion_rate,
+    trend,
+    demand_level,
+    service_type,
+    area
+):
+
+    capacity_ratio = (
+        predicted_demand / active_workers
+        if active_workers > 0
+        else float("inf")
+    )
+
+    if demand_level == "VERY HIGH":
+
+        insight = (
+            f"Very high demand is expected for {service_type} "
+            f"in {area}. Forecasted demand is substantially "
+            f"above currently available workforce capacity."
+        )
+
+    elif demand_level == "HIGH":
+
+        insight = (
+            f"High demand is expected for {service_type} "
+            f"in {area}. Workforce capacity may come under pressure."
+        )
+
+    elif demand_level == "MODERATE":
+
+        insight = (
+            f"Moderate demand is expected for {service_type} "
+            f"in {area}. Current capacity appears relatively balanced."
+        )
+
+    else:
+
+        insight = (
+            f"Low demand is expected for {service_type} "
+            f"in {area}. Available capacity may be sufficient."
+        )
+
+    # Add trend information
+    if trend == "RISING":
+
+        insight += " Demand is also showing a rising trend."
+
+    elif trend == "FALLING":
+
+        insight += " Demand is showing a falling trend."
+
+    # Add emergency pressure
+    if emergency_requests >= 5:
+
+        insight += (
+            " Emergency requests are relatively high, "
+            "indicating additional service pressure."
+        )
+
+    # Add completion pressure
+    if completion_rate < 80:
+
+        insight += (
+            " The current completion rate is low, "
+            "so capacity planning should be monitored closely."
+        )
+
+    return insight
+
+
+# =========================================
+# RECOMMENDATION GENERATOR
+# =========================================
+
+def generate_recommendation(
+    predicted_demand,
+    active_workers,
+    demand_level,
+    trend
+):
+
+    capacity_gap = max(
+        0,
+        predicted_demand - active_workers
+    )
+
+    if demand_level == "VERY HIGH":
+
+        if capacity_gap > 0:
+
+            return (
+                f"Prioritize additional workforce capacity. "
+                f"Consider reallocating suitable workers from "
+                f"nearby lower-demand areas or cooperatives."
+            )
+
+        return (
+            "Maintain high workforce readiness and monitor incoming requests closely."
+        )
+
+    elif demand_level == "HIGH":
+
+        if trend == "RISING":
+
+            return (
+                "Prepare additional workforce capacity and "
+                "monitor demand closely for further increases."
+            )
+
+        return (
+            "Keep additional workforce capacity on standby "
+            "to handle demand fluctuations."
+        )
+
+    elif demand_level == "MODERATE":
+
+        return (
+            "Current workforce allocation appears adequate. "
+            "Continue monitoring demand and worker availability."
+        )
+
+    else:
+
+        return (
+            "Current capacity appears sufficient. "
+            "Excess capacity may be utilized in other higher-demand areas."
+        )
+
+
+# =========================================
+# PREDICTION
 # =========================================
 
 @app.post("/predict")
 def predict(data: PredictionInput):
 
     # -----------------------------------------
-    # PREPARE INPUT FOR MODEL
+    # PREPARE MODEL INPUT
     # -----------------------------------------
 
     input_data = pd.DataFrame([{
+
         "district": data.district,
         "area": data.area,
         "service_type": data.service_type,
         "day_of_week": data.day_of_week,
+
         "month": data.month,
         "season": data.season,
         "holiday": data.holiday,
+
         "active_workers": data.active_workers,
+
         "previous_day_demand": data.previous_day_demand,
         "demand_last_7_days": data.demand_last_7_days,
         "demand_last_30_days": data.demand_last_30_days,
+
         "emergency_requests": data.emergency_requests,
+
         "avg_booking_value": data.avg_booking_value,
         "cancelled_requests": data.cancelled_requests,
+
         "completion_rate": data.completion_rate,
         "avg_response_time": data.avg_response_time
+
     }])
+
 
     # -----------------------------------------
     # MODEL PREDICTION
@@ -179,11 +332,14 @@ def predict(data: PredictionInput):
 
     prediction = model.predict(input_data)[0]
 
-    predicted_demand = max(0, round(float(prediction)))
+    predicted_demand = max(
+        0,
+        round(float(prediction))
+    )
 
 
     # -----------------------------------------
-    # DEMAND LEVEL
+    # ANALYSIS
     # -----------------------------------------
 
     demand_level = get_demand_level(
@@ -192,106 +348,57 @@ def predict(data: PredictionInput):
     )
 
 
-    # -----------------------------------------
-    # TREND
-    # -----------------------------------------
-
     trend = get_trend(
         predicted_demand,
+        data.previous_day_demand,
         data.demand_last_7_days,
         data.demand_last_30_days
     )
 
 
-    # -----------------------------------------
-    # WORKFORCE GAP
-    # -----------------------------------------
-
-    worker_gap = max(
+    capacity_gap = max(
         0,
         predicted_demand - data.active_workers
     )
 
 
-    # -----------------------------------------
-    # OPERATIONAL INSIGHT
-    # -----------------------------------------
-
-    if worker_gap > 0 and trend == "RISING":
-
-        insight = (
-            f"High and rising demand expected for "
-            f"{data.service_type} in {data.area}. "
-            f"Approximately {worker_gap} additional "
-            f"workers may be required."
-        )
-
-        recommendation = (
-            f"Consider reallocating approximately "
-            f"{worker_gap} workers from nearby "
-            f"lower-demand areas or cooperatives."
-        )
-
-    elif worker_gap > 0:
-
-        insight = (
-            f"Expected demand may exceed currently "
-            f"available workforce by approximately "
-            f"{worker_gap} workers."
-        )
-
-        recommendation = (
-            f"Consider arranging approximately "
-            f"{worker_gap} additional workers "
-            f"to handle expected demand."
-        )
-
-    elif trend == "RISING":
-
-        insight = (
-            f"Demand for {data.service_type} in "
-            f"{data.area} is showing a rising trend."
-        )
-
-        recommendation = (
-            "Monitor workforce availability and "
-            "prepare additional capacity if demand continues to rise."
-        )
-
-    elif trend == "FALLING":
-
-        insight = (
-            f"Demand for {data.service_type} in "
-            f"{data.area} is showing a falling trend."
-        )
-
-        recommendation = (
-            "Current workforce capacity appears sufficient; "
-            "excess capacity can potentially be utilized elsewhere."
-        )
-
-    else:
-
-        insight = (
-            f"Demand for {data.service_type} in "
-            f"{data.area} is expected to remain relatively stable."
-        )
-
-        recommendation = (
-            "Maintain current workforce allocation and continue monitoring demand."
-        )
+    insight = generate_insight(
+        predicted_demand,
+        data.active_workers,
+        data.emergency_requests,
+        data.completion_rate,
+        trend,
+        demand_level,
+        data.service_type,
+        data.area
+    )
 
 
-    # -----------------------------------------
+    recommendation = generate_recommendation(
+        predicted_demand,
+        data.active_workers,
+        demand_level,
+        trend
+    )
+
+
+    # =========================================
     # FINAL RESPONSE
-    # -----------------------------------------
+    # =========================================
 
     return {
+
         "predicted_demand": predicted_demand,
+
         "demand_level": demand_level,
+
         "trend": trend,
+
         "active_workers": data.active_workers,
-        "worker_gap": worker_gap,
+
+        "capacity_gap": capacity_gap,
+
         "insight": insight,
+
         "recommendation": recommendation
     }
