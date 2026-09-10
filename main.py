@@ -84,6 +84,22 @@ class PredictionInput(BaseModel):
     completion_rate: float
     avg_response_time: float
 
+# =========================================
+# WORKFORCE ALLOCATION INPUT
+# =========================================
+
+class NearbyCooperative(BaseModel):
+    name: str
+    available_capacity: float
+
+
+class WorkforceAllocationInput(BaseModel):
+
+    predicted_demand: float
+    current_capacity: float
+    current_workers: int
+
+    nearby_cooperatives: list[NearbyCooperative]
 
 # =========================================
 # HOME
@@ -479,6 +495,173 @@ def predict(data: PredictionInput):
         ),
 
         "status": status,
+
+        "insight": insight,
+
+        "recommendation": recommendation
+    }
+# =========================================
+# WORKFORCE ALLOCATION ENDPOINT
+# =========================================
+
+@app.post("/workforce-allocation")
+def workforce_allocation(data: WorkforceAllocationInput):
+
+    # -----------------------------------------
+    # CALCULATE LOCAL CAPACITY GAP
+    # -----------------------------------------
+
+    shortage = max(
+        0,
+        data.predicted_demand - data.current_capacity
+    )
+
+
+    # -----------------------------------------
+    # CASE 1: LOCAL CAPACITY IS SUFFICIENT
+    # -----------------------------------------
+
+    if shortage == 0:
+
+        return {
+            "predicted_demand": data.predicted_demand,
+            "current_capacity": data.current_capacity,
+            "current_workers": data.current_workers,
+            "shortage": 0,
+            "status": "SUFFICIENT",
+            "allocation_decision": "NO_REALLOCATION",
+            "allocations": [],
+            "insight": (
+                "Current workforce capacity is sufficient "
+                "for the expected demand."
+            ),
+            "recommendation": (
+                "Maintain the current workforce allocation."
+            )
+        }
+
+
+    # -----------------------------------------
+    # CASE 2: SHORTAGE EXISTS
+    # -----------------------------------------
+
+    remaining_shortage = shortage
+
+    allocations = []
+
+
+    # Sort nearby cooperatives by
+    # highest available capacity first
+
+    nearby = sorted(
+        data.nearby_cooperatives,
+        key=lambda x: x.available_capacity,
+        reverse=True
+    )
+
+
+    # -----------------------------------------
+    # ALLOCATE CAPACITY
+    # -----------------------------------------
+
+    for cooperative in nearby:
+
+        if remaining_shortage <= 0:
+            break
+
+        transferable_capacity = min(
+            cooperative.available_capacity,
+            remaining_shortage
+        )
+
+        if transferable_capacity > 0:
+
+            allocations.append({
+                "cooperative": cooperative.name,
+                "capacity_to_reallocate": round(
+                    transferable_capacity,
+                    2
+                )
+            })
+
+            remaining_shortage -= transferable_capacity
+
+
+    # -----------------------------------------
+    # CASE 3: ENOUGH NEARBY CAPACITY
+    # -----------------------------------------
+
+    if remaining_shortage <= 0:
+
+        allocation_decision = "REALLOCATE"
+
+        status = "SHORTAGE"
+
+        insight = (
+            f"Expected demand exceeds local capacity by "
+            f"{round(shortage, 2)} capacity units. "
+            "Nearby cooperatives have sufficient spare capacity "
+            "to support the shortage."
+        )
+
+        recommendation = (
+            "Reallocate suitable workforce capacity from "
+            "nearby cooperatives before adding new workforce."
+        )
+
+
+    # -----------------------------------------
+    # CASE 4: NEARBY CAPACITY IS NOT ENOUGH
+    # -----------------------------------------
+
+    else:
+
+        allocation_decision = "REALLOCATE_AND_ADD"
+
+        status = "SHORTAGE"
+
+        insight = (
+            f"Expected demand exceeds local capacity by "
+            f"{round(shortage, 2)} capacity units. "
+            f"Nearby cooperatives can cover only part of "
+            f"the shortage; approximately "
+            f"{round(remaining_shortage, 2)} capacity units "
+            "may still be required."
+        )
+
+        recommendation = (
+            "Use available nearby cooperative capacity first, "
+            "then arrange additional workforce capacity."
+        )
+
+
+    # -----------------------------------------
+    # FINAL RESPONSE
+    # -----------------------------------------
+
+    return {
+
+        "predicted_demand": data.predicted_demand,
+
+        "current_capacity": data.current_capacity,
+
+        "current_workers": data.current_workers,
+
+        "shortage": round(
+            shortage,
+            2
+        ),
+
+        "status": status,
+
+        "allocation_decision": allocation_decision,
+
+        "allocations": allocations,
+
+        "remaining_shortage": round(
+            max(0, remaining_shortage),
+            2
+        ),
 
         "insight": insight,
 
